@@ -119,9 +119,9 @@ class DocsBuildStaticCommand extends Command
     {
         // Highlight active sidebar item
         $sidebarHtml = preg_replace('/class="nav-item active"/', 'class="nav-item"', $sidebarHtml);
-        $sidebarHtml = preg_replace('/href="\/' . preg_quote($page, '/') . '\.html" class="nav-item"/', 'href="/' . $page . '.html" class="nav-item active"', $sidebarHtml);
+        $sidebarHtml = preg_replace('/href="' . preg_quote($page, '/') . '\.html" class="nav-item"/', 'href="' . $page . '.html" class="nav-item active"', $sidebarHtml);
 
-        $markdown = preg_replace('/\/docs\/\{\{version\}\}\/([a-zA-Z0-9_-]+)/', '/$1.html', $markdown);
+        $markdown = preg_replace('/\/docs\/\{\{version\}\}\/([a-zA-Z0-9_-]+)/', '$1.html', $markdown);
 
         $markdown = preg_replace_callback('/<x-since\s+([^>]+)\/>/', function ($matches) {
             $attrs = $matches[1];
@@ -192,7 +192,7 @@ class DocsBuildStaticCommand extends Command
                     $currentCategory = trim($catMatch[1]);
                     $sidebarHtml .= sprintf('<div class="nav-group"><div class="nav-group-title">%s</div><ul class="nav-links">', htmlspecialchars($currentCategory));
                 } elseif (preg_match('/\[([^\]]+)\]\(\/docs\/\{\{version\}\}\/([^\)]+)\)/', $line, $linkMatch)) {
-                    $sidebarHtml .= sprintf('<li><a href="/%s.html" class="nav-item">%s</a></li>', $linkMatch[2], htmlspecialchars($linkMatch[1]));
+                    $sidebarHtml .= sprintf('<li><a href="%s.html" class="nav-item">%s</a></li>', $linkMatch[2], htmlspecialchars($linkMatch[1]));
                 }
             }
             if ($currentCategory !== null) {
@@ -217,7 +217,7 @@ class DocsBuildStaticCommand extends Command
             $results[] = [
                 'type' => 'page',
                 'title' => ucwords(str_replace('-', ' ', $slug)),
-                'url' => '/' . $slug . '.html',
+                'url' => $slug . '.html',
             ];
         }
         if (file_exists($symbolsIndexPath)) {
@@ -278,7 +278,7 @@ CSS;
 </head>
 <body>
     <header>
-        <a href="/index.html" class="header-brand">
+        <a href="index.html" class="header-brand">
             <div class="brand-text">Laravel <span style="font-weight:400; color:var(--text-muted);">Docs</span> <span class="brand-badge">Version & PR Enhanced</span></div>
         </a>
         <div class="header-actions">
@@ -313,7 +313,7 @@ CSS;
     </div>
     <script>
         let searchData = [];
-        fetch('/api/search.json').then(r => r.json()).then(d => searchData = d).catch(() => {});
+        fetch('api/search.json').then(r => r.json()).then(d => searchData = d).catch(() => {});
         function openSearch() { document.getElementById('searchModal').style.display = 'flex'; document.getElementById('searchInput').focus(); }
         function closeSearch() { document.getElementById('searchModal').style.display = 'none'; }
         function closeSearchOnBackdrop(e) { if (e.target.id === 'searchModal') closeSearch(); }
