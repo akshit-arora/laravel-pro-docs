@@ -1,0 +1,57 @@
+{
+  "name": "akshit-arora/laravel-pro-docs",
+  "description": "CLI tool to scan Laravel framework history and inject version/PR metadata into documentation",
+  "keywords": [
+    "laravel",
+    "documentation",
+    "docs",
+    "ast",
+    "nikic-php-parser",
+    "commonmark",
+    "git",
+    "cli"
+  ],
+  "homepage": "https://github.com/akshit-arora/laravel-pro-docs",
+  "authors": [
+    {
+      "name": "Akshit Arora",
+      "email": "akshit@example.com",
+      "role": "Developer"
+    }
+  ],
+  "support": {
+    "issues": "https://github.com/akshit-arora/laravel-pro-docs/issues",
+    "source": "https://github.com/akshit-arora/laravel-pro-docs"
+  },
+  "type": "project",
+  "license": "MIT",
+  "require": {
+    "php": "^8.2",
+    "ext-json": "*",
+    "league/commonmark": "^2.5",
+    "nikic/php-parser": "^5.0",
+    "symfony/console": "^7.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^11.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "LaravelProDocs\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "LaravelProDocs\\Tests\\": "tests/"
+    }
+  },
+  "bin": [
+    "bin/console"
+  ],
+  "scripts": {
+    "test": "phpunit"
+  },
+  "config": {
+    "sort-packages": true
+  }
+}

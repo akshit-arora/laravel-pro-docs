@@ -1,0 +1,14 @@
+/vendor/
+/framework/
+/docs/
+/output/*
+!/output/.gitkeep
+/storage/*
+!/storage/.gitkeep
+!/storage/*.sample.json
+.DS_Store
+.phpunit.result.cache
+.env
+.idea/
+.vscode/
+/dist/

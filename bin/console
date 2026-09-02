@@ -1,0 +1,39 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+// Look for autoloader in vendor/autoload.php or relative to bin
+$autoloadPaths = [
+    __DIR__ . '/../vendor/autoload.php',
+    __DIR__ . '/../../../autoload.php',
+];
+
+$autoloaderFound = false;
+foreach ($autoloadPaths as $autoloadPath) {
+    if (file_exists($autoloadPath)) {
+        require_once $autoloadPath;
+        $autoloaderFound = true;
+        break;
+    }
+}
+
+if (!$autoloaderFound) {
+    fwrite(STDERR, "Unable to find composer autoload.php. Please run 'composer install'.\n");
+    exit(1);
+}
+
+use LaravelProDocs\Commands\DocsBuildStaticCommand;
+use LaravelProDocs\Commands\BuildIndexCommand;
+use LaravelProDocs\Commands\DocsRewriteCommand;
+use LaravelProDocs\Commands\DocsServeCommand;
+use Symfony\Component\Console\Application;
+
+$application = new Application('Laravel Pro Docs CLI Tool', '1.0.0');
+
+$application->add(new BuildIndexCommand());
+$application->add(new DocsRewriteCommand());
+$application->add(new DocsServeCommand());
+$application->add(new DocsBuildStaticCommand());
+
+$application->run();

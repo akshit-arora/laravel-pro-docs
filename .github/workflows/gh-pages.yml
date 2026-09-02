@@ -1,0 +1,70 @@
+name: Deploy Laravel Pro Docs to GitHub Pages
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch: # Allows manual trigger from the GitHub Actions UI
+  schedule:
+    # Run automatically every day at 00:00 UTC to pull the latest Laravel Docs
+    - cron: '0 0 * * *'
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, json
+
+      - name: Install Composer Dependencies
+        run: composer install --prefer-dist --no-progress
+
+      - name: Clone laravel/framework (Full history for tags)
+        run: |
+          git clone --no-checkout https://github.com/laravel/framework.git framework
+          cd framework
+          git config core.sparseCheckout true
+          echo "src/" >> .git/info/sparse-checkout
+          git checkout master
+
+      - name: Clone laravel/docs
+        run: git clone --depth 1 https://github.com/laravel/docs.git docs
+
+      - name: Build Framework Symbol & PR Index
+        run: php bin/console build:index --framework-path=framework --docs-path=docs
+        
+      - name: Rewrite Markdown Docs
+        run: php bin/console docs:rewrite --docs-path=docs --output-path=output/docs
+
+      - name: Build Static HTML Site
+        run: php bin/console docs:build-static --docs-path=output/docs --output-path=dist
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './dist'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

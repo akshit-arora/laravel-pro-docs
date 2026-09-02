@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+# Exclude dev and test files from export / composer dist zips
+/tests export-ignore
+/.github export-ignore
+/phpunit.xml export-ignore
+/.gitignore export-ignore
+/.gitattributes export-ignore
