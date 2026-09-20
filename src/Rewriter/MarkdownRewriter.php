@@ -6,6 +6,7 @@ namespace LaravelProDocs\Rewriter;
 
 use LaravelProDocs\Indexer\SymbolRegistry;
 use LaravelProDocs\Models\SymbolMeta;
+use LaravelProDocs\Support\Anchor;
 use League\CommonMark\Environment\Environment;
 use League\CommonMark\Extension\CommonMark\CommonMarkCoreExtension;
 use League\CommonMark\Parser\MarkdownParser;
@@ -15,12 +16,29 @@ class MarkdownRewriter
 {
     private MarkdownParser $parser;
 
+    /**
+     * @param callable(string $symbol, ?string $docSlug, ?string $anchor): void|null $onMatch
+     *   Optional hook invoked every time a symbol is matched and tagged. Used
+     *   to record which documentation page + section documents which symbol.
+     *   $anchor is the current section slug (null above the first heading).
+     */
     public function __construct(
         private readonly SymbolMatcher $matcher,
+        private readonly mixed $onMatch = null,
     ) {
         $environment = new Environment(['html_input' => 'allow']);
         $environment->addExtension(new CommonMarkCoreExtension());
         $this->parser = new MarkdownParser($environment);
+    }
+
+    /** @var ?string Current section anchor while rewriting, reset per rewrite() call. */
+    private ?string $sectionAnchor = null;
+
+    private function trackMatch(?SymbolMeta $meta, ?string $docSlug): void
+    {
+        if ($meta !== null && $docSlug !== null && $docSlug !== '' && is_callable($this->onMatch)) {
+            ($this->onMatch)($meta->symbol, $docSlug, $this->sectionAnchor);
+        }
     }
 
     public static function createFromRegistry(SymbolRegistry $registry): self
@@ -51,20 +69,45 @@ class MarkdownRewriter
         $lines = explode("\n", $markdown);
         $rewrittenLines = [];
         $inFencedCodeBlock = false;
-        $fenceDelimiter = null;
+        $fenceChar = null;
+        $fenceLength = 0;
+        $this->sectionAnchor = null;
 
         foreach ($lines as $line) {
-            // Check for fenced code block toggle (``` or ~~~)
-            if (preg_match('/^\s*(```+|~~~+)/', $line, $fenceMatches)) {
-                $delimiter = $fenceMatches[1];
+            // Track fenced code blocks per CommonMark spec: up to 3 leading spaces,
+            // fence of >=3 backticks or tildes. Closing fence must use same char,
+            // be at least as long, and have no info string.
+            if (preg_match('/^ {0,3}(```+|~~~+)[^`]*$/', $line, $fenceMatches)) {
+                $fence = $fenceMatches[1];
+                $char = $fence[0];
+                $length = strlen($fence);
+                $trimmed = trim($line);
+
                 if (!$inFencedCodeBlock) {
+                    // An opening backtick fence must not contain backticks in its info string.
+                    if ($char === '`' && str_contains(substr($trimmed, $length), '`')) {
+                        $rewrittenLines[] = $this->rewriteLine($line, $docSlug);
+                        continue;
+                    }
                     $inFencedCodeBlock = true;
-                    $fenceDelimiter = substr($delimiter, 0, 3);
-                } elseif ($fenceDelimiter !== null && str_starts_with(trim($line), $fenceDelimiter)) {
-                    $inFencedCodeBlock = false;
-                    $fenceDelimiter = null;
+                    $fenceChar = $char;
+                    $fenceLength = $length;
+                } elseif ($char === $fenceChar && $length >= $fenceLength) {
+                    // Closing fence: only whitespace allowed after the run.
+                    $after = substr($trimmed, $length);
+                    if (trim($after) === '') {
+                        $inFencedCodeBlock = false;
+                        $fenceChar = null;
+                        $fenceLength = 0;
+                    }
                 }
 
+                $rewrittenLines[] = $line;
+                continue;
+            }
+
+            // Indented code blocks (4+ spaces) are left untouched as well.
+            if (!$inFencedCodeBlock && preg_match('/^ {4,}\S/', $line)) {
                 $rewrittenLines[] = $line;
                 continue;
             }
@@ -89,7 +132,8 @@ class MarkdownRewriter
         // Skip TOC navigation lines (e.g. - [Introduction](#introduction) or - [The `queue:work` Command](#cmd))
         if (preg_match('/^\s*[-*+]\s+\[.*\]\(#[^)]+\)\s*$/', $line)) {
             // Clean up any previously injected tags inside TOC links
-            return (string) preg_replace('/\s*<x-since[^>]*\/>/', '', $line);
+            $cleaned = preg_replace('/\s*<x-since[^>]*\/>/', '', $line);
+            return is_string($cleaned) ? $cleaned : $line;
         }
 
         // 1. Check if line is a Heading (e.g. # Title, ## Section, ### `Number::currency()`)
@@ -99,10 +143,18 @@ class MarkdownRewriter
             $level = strlen(trim($prefix));
 
             // Extract existing <x-since> tag if present
-            $cleanBody = trim(preg_replace('/\s*<x-since[^>]*\/>/', '', $headingBody));
+            $stripped = preg_replace('/\s*<x-since[^>]*\/>/', '', $headingBody);
+            $cleanBody = trim(is_string($stripped) ? $stripped : $headingBody);
+            // Track the current section so matches resolve to deep links.
+            // Computed with the same slug scheme as render-time heading ids.
+            $this->sectionAnchor = Anchor::fromMarkdownHeading($cleanBody);
+            if ($this->sectionAnchor === '') {
+                $this->sectionAnchor = null;
+            }
             $meta = $this->matcher->matchHeading($cleanBody, $level, $docSlug);
 
             if ($meta !== null) {
+                $this->trackMatch($meta, $docSlug);
                 $tag = $this->formatTag($meta);
                 return rtrim($prefix . $cleanBody) . ' ' . $tag;
             }
@@ -126,12 +178,14 @@ class MarkdownRewriter
                 $meta = $this->matcher->match("rule:{$ruleName}", $docSlug)
                     ?? $this->matcher->match("validation:{$ruleName}", $docSlug);
                 if ($meta !== null && ($meta->pr !== null || $meta->version !== 'v9.0.0')) {
+                    $this->trackMatch($meta, $docSlug);
                     $tag = $this->formatTag($meta);
                     return "{$cleanLink} {$tag}";
                 }
             } elseif ($docSlug === 'http-tests') {
                 $meta = $this->matcher->match("TestResponse::{$linkText}", $docSlug);
                 if ($meta !== null && ($meta->pr !== null || $meta->version !== 'v9.0.0')) {
+                    $this->trackMatch($meta, $docSlug);
                     $tag = $this->formatTag($meta);
                     return "{$cleanLink} {$tag}";
                 }
@@ -139,12 +193,14 @@ class MarkdownRewriter
                 $candidate = ($docSlug === 'collections') ? "Collection::{$linkText}" : "EloquentCollection::{$linkText}";
                 $meta = $this->matcher->match($candidate, $docSlug) ?? $this->matcher->match("Collection::{$linkText}", $docSlug);
                 if ($meta !== null && ($meta->pr !== null || $meta->version !== 'v9.0.0')) {
+                    $this->trackMatch($meta, $docSlug);
                     $tag = $this->formatTag($meta);
                     return "{$cleanLink} {$tag}";
                 }
             } elseif ($docSlug === 'strings') {
                 $meta = $this->matcher->match("Str::{$linkText}", $docSlug);
                 if ($meta !== null && ($meta->pr !== null || $meta->version !== 'v9.0.0')) {
+                    $this->trackMatch($meta, $docSlug);
                     $tag = $this->formatTag($meta);
                     return "{$cleanLink} {$tag}";
                 }
@@ -217,6 +273,7 @@ class MarkdownRewriter
 
                 $meta = $this->matcher->match($codeContent, $docSlug);
                 if ($meta !== null) {
+                    $this->trackMatch($meta, $docSlug);
                     $tag = $this->formatTag($meta);
                     return "{$fullBackticks} {$tag}";
                 }
@@ -237,17 +294,18 @@ class MarkdownRewriter
      */
     public function formatTag(SymbolMeta $meta): string
     {
-        $attrs = [sprintf('v="%s"', $meta->version)];
+        // Tag *attributes* (not badge HTML) stay here; badge HTML lives in BadgeRenderer.
+        $attrs = [sprintf('v="%s"', htmlspecialchars($meta->version, ENT_QUOTES, 'UTF-8'))];
 
         if ($meta->pr !== null && $meta->prUrl !== null) {
             $attrs[] = sprintf('pr="%d"', $meta->pr);
-            $attrs[] = sprintf('url="%s"', $meta->prUrl);
+            $attrs[] = sprintf('url="%s"', htmlspecialchars($meta->prUrl, ENT_QUOTES, 'UTF-8'));
         } elseif ($meta->prUrl !== null && !str_starts_with($meta->symbol, 'header:') && !str_starts_with($meta->symbol, 'page:')) {
-            $attrs[] = sprintf('url="%s"', $meta->prUrl);
+            $attrs[] = sprintf('url="%s"', htmlspecialchars($meta->prUrl, ENT_QUOTES, 'UTF-8'));
         }
 
         if ($meta->apiUrl !== null) {
-            $attrs[] = sprintf('api="%s"', $meta->apiUrl);
+            $attrs[] = sprintf('api="%s"', htmlspecialchars($meta->apiUrl, ENT_QUOTES, 'UTF-8'));
         }
 
         return '<x-since ' . implode(' ', $attrs) . ' />';

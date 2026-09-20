@@ -60,8 +60,24 @@ class PrExtractor
     }
 
     /**
+     * Generic short words that must never match on their own (e.g. "add" in
+     * "Context::add" must not match every commit mentioning "add").
+     *
+     * @var array<string>
+     */
+    private const GENERIC_TERMS = [
+        'add', 'get', 'set', 'all', 'new', 'fix', 'use', 'run', 'has', 'put',
+        'push', 'pull', 'make', 'create', 'update', 'delete', 'find', 'save',
+    ];
+
+    /**
      * Find the best PR number from an array of commit messages, matching specifically
      * against the given symbol, method, class, or command name.
+     *
+     * Matching is word-boundary aware so short method names (e.g. "add") do not
+     * match unrelated commits. The loose "few commits touched this file, take
+     * the first PR" fallback now only applies when all file commits agree on a
+     * single PR, otherwise it returns null instead of a random PR.
      *
      * @param array<string> $commitMessages
      */
@@ -73,22 +89,46 @@ class PrExtractor
 
         // 1. If symbol is given, check for commits mentioning the symbol, method, class, or command
         if ($symbol !== null) {
-            $terms = [$symbol];
+            $fullSymbol = $symbol;
+            $subTerms = [];
             if (str_contains($symbol, '::')) {
                 [$class, $method] = explode('::', $symbol, 2);
-                $terms[] = $method;
-                $terms[] = $class;
+                $classShort = $class;
+                if (str_contains($class, '\\')) {
+                    $parts = explode('\\', $class);
+                    $classShort = (string) end($parts);
+                }
+                $subTerms[] = $method;
+                $subTerms[] = $classShort;
             } elseif (str_contains($symbol, ':')) {
                 $parts = explode(':', $symbol);
-                $terms[] = end($parts);
-                $terms[] = $symbol;
+                $last = (string) end($parts);
+                if ($last !== '' && $last !== $symbol) {
+                    $subTerms[] = $last;
+                }
             } elseif (str_starts_with($symbol, '@')) {
-                $terms[] = substr($symbol, 1);
+                $subTerms[] = substr($symbol, 1);
             }
 
+            // Pass 1: full symbol mention (e.g. "Number::currency"). Substring is
+            // fine here because the full symbol is already specific.
             foreach ($commitMessages as $msg) {
-                foreach ($terms as $term) {
-                    if (strlen($term) >= 3 && stripos($msg, $term) !== false) {
+                if (stripos($msg, $fullSymbol) !== false) {
+                    $pr = $this->extractPrNumber($msg);
+                    if ($pr !== null) {
+                        return $pr;
+                    }
+                }
+            }
+
+            // Pass 2: method/class term with word boundaries, skipping generic words.
+            foreach ($commitMessages as $msg) {
+                foreach ($subTerms as $term) {
+                    $term = trim($term);
+                    if (strlen($term) < 4 || in_array(strtolower($term), self::GENERIC_TERMS, true)) {
+                        continue;
+                    }
+                    if (preg_match('/\b' . preg_quote($term, '/') . '\b/i', $msg) === 1) {
                         $pr = $this->extractPrNumber($msg);
                         if ($pr !== null) {
                             return $pr;
@@ -103,14 +143,20 @@ class PrExtractor
             return null;
         }
 
-        // 2. For file-specific commits (commits that modified this exact file in this release):
-        // If only 1 or 2 commits touched the file and contain a PR, associate with it
+        // 2. For file-specific commits: only attribute when the file history is
+        // unambiguous — i.e. every PR-bearing commit in this range points to the
+        // same single PR. Otherwise return null instead of a random PR.
         if (count($commitMessages) <= 3) {
+            $prs = [];
             foreach ($commitMessages as $msg) {
                 $pr = $this->extractPrNumber($msg);
                 if ($pr !== null) {
-                    return $pr;
+                    $prs[] = $pr;
                 }
+            }
+            $unique = array_values(array_unique($prs));
+            if (count($unique) === 1) {
+                return $unique[0];
             }
         }
 

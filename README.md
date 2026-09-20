@@ -71,6 +71,7 @@ php bin/console docs:rewrite --docs-path=/path/to/laravel/docs
 - `--docs-path`: Path to `laravel/docs` markdown files directory (required).
 - `-i, --index-path`: Path to `storage/symbols_index.json` (default: `storage/symbols_index.json`).
 - `-o, --output-path`: Target output directory for rewritten markdown (default: `output/docs`).
+- `--overrides-path`: Directory with override markdown files applied over `--docs-path` (default: `overrides`). Mirrors CI's "Apply Overrides" step so local preview matches deploys.
 - `--dry-run`: Simulate rewriting without writing files.
 
 ---
@@ -87,6 +88,7 @@ php bin/console docs:serve
 - `--docs-path`: Path to rewritten markdown directory (default: `output/docs`).
 - `-p, --port`: Port to listen on (default: `8080`).
 - `--host`: Host to bind to (default: `127.0.0.1`).
+- `-i, --index-path`: Path to `storage/symbols_index.json` for search (default: `storage/symbols_index.json`).
 
 Open your browser at **http://127.0.0.1:8080** to browse the rendered documentation!
 
@@ -100,6 +102,39 @@ Open your browser at **http://127.0.0.1:8080** to browse the rendered documentat
 - **Guardrails**:
   - Bare instance methods (like `->get()`, `->find()`, `->save()`) and fenced code blocks (` ```php ... ``` `) are strictly untouched.
   - Rewriting is idempotent: existing `<x-since>` tags are updated or preserved rather than duplicated.
+
+---
+
+### 4. Build Static HTML Site (`docs:build-static`)
+
+Builds a deployable static site (used by GitHub Pages) from rewritten markdown. Uses the same badge rendering as `docs:serve`:
+
+```bash
+php bin/console docs:build-static --docs-path=output/docs --output-path=dist
+```
+
+#### Options:
+- `--docs-path`: Path to rewritten markdown directory (default: `output/docs`).
+- `-o, --output-path`: Target output directory for static HTML (default: `dist`).
+- `-i, --index-path`: Path to `storage/symbols_index.json` for the search dataset (default: `storage/symbols_index.json`).
+
+> Both `docs:serve` and `docs:build-static` render through the same shared
+> pipeline (`src/Support/MarkdownPipeline`, `BadgeRenderer`, `SidebarBuilder`,
+> `TocBuilder`, `SearchIndexBuilder`, `Layout`), so preview and deployed HTML
+> stay identical. `Source` links point at the introducing tag; API links point
+> at the living `master` API docs.
+>
+> Search behavior: clicking a symbol row deep-links to the exact documenting
+> section (e.g. `numbers.html#formatting-numbers` — `docs:rewrite` writes this
+> map to `output/docs/symbol_pages.json`); the API/PR badges open only via
+> their own links. Heading anchors are slugified identically at rewrite time
+> (`Support\Anchor::fromMarkdownHeading`) and render time
+> (`Support\Anchor::fromHtmlHeading`), excluding badges and `{.markers}`.
+>
+> The Markdown pipeline allows the `<style>` blocks Laravel's own docs ship
+> (e.g. the 3-column method-list layout) while still escaping dangerous tags
+> like `<script>`; badges inside those lists are re-scoped to inline pills so
+> the docs' `display: block` list CSS doesn't blow them up.
 
 ---
 

@@ -31,19 +31,18 @@ class GitRepository
             return preg_match('/^v\d+\.\d+\.\d+$/', $tag) === 1;
         });
 
-        // Sort by version_compare (stripping 'v' for comparison)
-        usort($tags, function (string $a, string $b) {
-            $verA = ltrim($a, 'v');
-            $verB = ltrim($b, 'v');
-            return version_compare($verA, $verB);
+        // Sort by version_compare (stripping a single leading 'v' for comparison)
+        $stripV = static fn (string $t): string => str_starts_with($t, 'v') ? substr($t, 1) : $t;
+        usort($tags, function (string $a, string $b) use ($stripV) {
+            return version_compare($stripV($a), $stripV($b));
         });
 
-        $fromVersion = ltrim($fromTag, 'v');
-        $toVersion = $toTag !== null ? ltrim($toTag, 'v') : null;
+        $fromVersion = $stripV($fromTag);
+        $toVersion = $toTag !== null ? $stripV($toTag) : null;
 
         $filtered = [];
         foreach ($tags as $tag) {
-            $ver = ltrim($tag, 'v');
+            $ver = $stripV($tag);
             if (version_compare($ver, $fromVersion, '<')) {
                 continue;
             }

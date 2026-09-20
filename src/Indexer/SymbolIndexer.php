@@ -61,26 +61,6 @@ class SymbolIndexer
             $prevTag = $tag;
         }
 
-        // Refresh API and source code line URLs from the latest HEAD / master tree so line links are 100% accurate for master
-        $latestFiles = $this->git->listFiles('HEAD', 'src/');
-        foreach ($latestFiles as $file) {
-            if (!str_ends_with($file, '.php')) {
-                continue;
-            }
-
-            $content = $this->git->getFileContent('HEAD', $file);
-            if ($content === null || trim($content) === '') {
-                continue;
-            }
-
-            $symbols = $this->extractor->extractSymbolsFromCode($content, $file);
-            foreach ($symbols as $symbol => $apiUrl) {
-                if ($this->registry->has($symbol)) {
-                    $this->registry->updateApiUrl($symbol, $apiUrl);
-                }
-            }
-        }
-
         return $this->registry;
     }
 
@@ -97,7 +77,7 @@ class SymbolIndexer
                 continue;
             }
 
-            $symbols = $this->extractor->extractSymbolsFromCode($content, $file);
+            $symbols = $this->extractor->extractSymbolsFromCode($content, $file, $tag);
             foreach ($symbols as $symbol => $apiUrl) {
                 $releaseUrl = $this->prExtractor->generateUrl(null, $tag);
                 $this->registry->register($symbol, $tag, null, $releaseUrl, $apiUrl);
@@ -124,7 +104,7 @@ class SymbolIndexer
                 continue;
             }
 
-            $symbols = $this->extractor->extractSymbolsFromCode($content, $file);
+            $symbols = $this->extractor->extractSymbolsFromCode($content, $file, $tag);
             $newSymbolsInFile = [];
 
             foreach ($symbols as $symbol => $apiUrl) {

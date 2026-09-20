@@ -57,9 +57,13 @@ class AstSymbolExtractor
     /**
      * Extract all public symbols (classes methods, facade docblock methods, helper functions, artisan commands, blade directives) from PHP code.
      *
-     * @return array<string> List of symbol identifiers (e.g. ['Number::currency', 'Illuminate\Support\Number::currency', 'str', 'make:model', '@use'])
+     * API reference URLs intentionally point at the living `master` API docs,
+     * while GitHub source blob URLs are pinned to $ref (the introducing tag)
+     * so "Source" links show the code as it was when the symbol landed.
+     *
+     * @return array<string, ?string> Map of symbol identifier => URL (e.g. ['Number::currency' => 'https://...'])
      */
-    public function extractSymbolsFromCode(string $code, string $filePath = ''): array
+    public function extractSymbolsFromCode(string $code, string $filePath = '', ?string $ref = 'master'): array
     {
         if (trim($code) === '') {
             return [];
@@ -76,7 +80,9 @@ class AstSymbolExtractor
 
         $docblockParser = $this->docblockParser;
 
-        $visitor = new class($docblockParser, $filePath) extends NodeVisitorAbstract {
+        $ref = ($ref === null || trim($ref) === '') ? 'master' : trim($ref);
+
+        $visitor = new class($docblockParser, $filePath, $ref) extends NodeVisitorAbstract {
             private ?string $currentNamespace = null;
             /** @var array<string, ?string> */
             public array $collectedSymbols = [];
@@ -84,6 +90,7 @@ class AstSymbolExtractor
             public function __construct(
                 private readonly FacadeDocblockParser $docblockParser,
                 private readonly string $filePath,
+                private readonly string $ref,
             ) {
             }
 
@@ -147,7 +154,7 @@ class AstSymbolExtractor
                             if ($this->filePath !== '') {
                                 $relPath = str_replace('\\', '/', $this->filePath);
                                 if (preg_match('/(src\/Illuminate\/[a-zA-Z0-9_\/.-]+\.php)/', $relPath, $m)) {
-                                    $ruleSourceUrl = sprintf('https://github.com/laravel/framework/blob/master/%s#L%d-L%d', $m[1], $ruleStartLine, $ruleEndLine);
+                                    $ruleSourceUrl = sprintf('https://github.com/laravel/framework/blob/%s/%s#L%d-L%d', $this->ref, $m[1], $ruleStartLine, $ruleEndLine);
                                 }
                             }
                             if ($ruleSourceUrl === null) {
@@ -197,7 +204,7 @@ class AstSymbolExtractor
                         $relPath = str_replace('\\', '/', $this->filePath);
                         if (preg_match('/(src\/Illuminate\/[a-zA-Z0-9_\/.-]+\.php)/', $relPath, $m)) {
                             $cleanRelPath = $m[1];
-                            $helperSourceUrl = sprintf('https://github.com/laravel/framework/blob/master/%s#L%d-L%d', $cleanRelPath, $startLine, $endLine);
+                            $helperSourceUrl = sprintf('https://github.com/laravel/framework/blob/%s/%s#L%d-L%d', $this->ref, $cleanRelPath, $startLine, $endLine);
                         }
                     }
 

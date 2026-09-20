@@ -50,6 +50,13 @@ class DocsRewriteCommand extends Command
                 null,
                 InputOption::VALUE_NONE,
                 'Simulate rewriting without writing files to disk'
+            )
+            ->addOption(
+                'overrides-path',
+                null,
+                InputOption::VALUE_OPTIONAL,
+                'Path to a directory with override markdown files (same relative layout as docs-path, applied over docs-path)',
+                'overrides'
             );
     }
 
@@ -58,17 +65,18 @@ class DocsRewriteCommand extends Command
         $io = new SymfonyStyle($input, $output);
         $io->title('Laravel Pro Docs: Markdown AST Rewriter');
 
-        $docsPath = $input->getOption('docs-path');
-        if (empty($docsPath)) {
+        $rawDocsPath = $input->getOption('docs-path');
+        if (empty($rawDocsPath)) {
             $io->error('Please specify the path to laravel/docs markdown files using --docs-path');
             return Command::FAILURE;
         }
 
-        $docsPath = (string) realpath($docsPath);
-        if (!is_dir($docsPath)) {
-            $io->error("Directory does not exist: {$docsPath}");
+        $resolvedDocsPath = realpath((string) $rawDocsPath);
+        if ($resolvedDocsPath === false || !is_dir($resolvedDocsPath)) {
+            $io->error("Directory does not exist: {$rawDocsPath}");
             return Command::FAILURE;
         }
+        $docsPath = $resolvedDocsPath;
 
         $indexPath = (string) $input->getOption('index-path');
         if (!file_exists($indexPath)) {
@@ -79,19 +87,44 @@ class DocsRewriteCommand extends Command
         $outputPath = (string) $input->getOption('output-path');
         $dryRun = (bool) $input->getOption('dry-run');
 
+        // Overrides mirror CI's "Apply Overrides" step so local preview matches deploys.
+        $rawOverridesPath = $input->getOption('overrides-path');
+        $overridesPath = null;
+        if (is_string($rawOverridesPath) && $rawOverridesPath !== '') {
+            $resolvedOverrides = realpath($rawOverridesPath);
+            if ($resolvedOverrides !== false && is_dir($resolvedOverrides)) {
+                $overridesPath = $resolvedOverrides;
+            }
+        }
+
         $io->section('Configuration');
-        $io->listing([
+        $configLines = [
             "Documentation Source: <info>{$docsPath}</info>",
             "Symbols Index: <info>{$indexPath}</info>",
             "Output Directory: <info>{$outputPath}</info>" . ($dryRun ? ' (DRY RUN - No files will be written)' : ''),
-        ]);
+        ];
+        if ($overridesPath !== null) {
+            $configLines[] = "Overrides: <info>{$overridesPath}</info>";
+        }
+        $io->listing($configLines);
 
         try {
             $registry = SymbolRegistry::loadFromJson($indexPath);
             $io->info(sprintf('Loaded %d indexed symbols from %s', $registry->count(), $indexPath));
 
             $matcher = new SymbolMatcher($registry);
-            $rewriter = new MarkdownRewriter($matcher);
+            // Record which page + section each symbol was tagged in, so search
+            // results can deep-link to the documentation instead of the API page.
+            // First occurrence per page wins (file order is top-down).
+            $symbolPages = [];
+            $rewriter = new MarkdownRewriter($matcher, function (string $symbol, ?string $slug, ?string $anchor) use (&$symbolPages): void {
+                if ($slug === null || $slug === '') {
+                    return;
+                }
+                if (!isset($symbolPages[$symbol][$slug])) {
+                    $symbolPages[$symbol][$slug] = $anchor;
+                }
+            });
 
             // Collect all markdown files to calculate progress
             $files = [];
@@ -104,6 +137,30 @@ class DocsRewriteCommand extends Command
                 if ($item->isFile() && $item->getExtension() === 'md') {
                     $files[] = $item->getPathname();
                 }
+            }
+
+            // Overlay override-only files so `overrides/foo.md` behaves like CI's `cp overrides/* docs/`.
+            if ($overridesPath !== null) {
+                $overrideIterator = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($overridesPath, \FilesystemIterator::SKIP_DOTS),
+                    \RecursiveIteratorIterator::LEAVES_ONLY
+                );
+                $seen = [];
+                foreach ($files as $f) {
+                    $seen[ltrim(substr($f, strlen($docsPath)), '/\\')] = true;
+                }
+                foreach ($overrideIterator as $item) {
+                    if (!$item->isFile() || $item->getExtension() !== 'md') {
+                        continue;
+                    }
+                    $rel = ltrim(substr($item->getPathname(), strlen($overridesPath)), '/\\');
+                    if (!isset($seen[$rel])) {
+                        $files[] = $overridesPath . DIRECTORY_SEPARATOR . $rel;
+                        $seen[$rel] = true;
+                    }
+                }
+                // Keep output deterministic.
+                sort($files);
             }
 
             if (empty($files)) {
@@ -124,10 +181,24 @@ class DocsRewriteCommand extends Command
             $totalTags = 0;
 
             foreach ($files as $sourcePath) {
-                $relativePath = ltrim(substr($sourcePath, strlen($docsPath)), '/\\');
+                $isOverrideOnly = $overridesPath !== null && str_starts_with($sourcePath, $overridesPath . DIRECTORY_SEPARATOR);
+                $baseForRelative = $isOverrideOnly ? $overridesPath : $docsPath;
+                $relativePath = ltrim(substr($sourcePath, strlen($baseForRelative)), '/\\');
                 $targetPath = rtrim($outputPath, '/\\') . DIRECTORY_SEPARATOR . $relativePath;
 
-                $content = file_get_contents($sourcePath);
+                // If an override exists for this relative path, it wins (matches CI copy order).
+                $effectiveSource = $sourcePath;
+                if (!$isOverrideOnly && $overridesPath !== null) {
+                    $overrideCandidate = $overridesPath . DIRECTORY_SEPARATOR . $relativePath;
+                    if (is_file($overrideCandidate)) {
+                        $effectiveSource = $overrideCandidate;
+                    }
+                }
+
+                $content = file_get_contents($effectiveSource);
+                if ($content === false) {
+                    throw new \RuntimeException("Unable to read file: {$effectiveSource}");
+                }
                 $docSlug = basename($relativePath, '.md');
                 $rewritten = $rewriter->rewrite($content, $docSlug);
                 $isModified = ($content !== $rewritten);
@@ -138,13 +209,10 @@ class DocsRewriteCommand extends Command
                     if (!is_dir($targetDir) && !mkdir($targetDir, 0755, true) && !is_dir($targetDir)) {
                         throw new \RuntimeException("Unable to create target directory: {$targetDir}");
                     }
-                    
-                    if ($docSlug === 'installation') {
-                        $intro = "\n> **Welcome to Laravel Pro Docs**\n> \n> You are viewing an enriched version of the official [Laravel documentation](https://laravel.com/docs). This documentation includes **Version & PR Badges** generated by the [Laravel Pro Docs CLI tool](https://github.com/akshit-arora/laravel-pro-docs). \n> \n> Whenever you see a badge next to a method, class, or heading, it indicates the exact framework release and GitHub Pull Request where that feature was introduced. You can click the badge to jump straight to the source code implementation or PR discussion!\n> \n> Built by [Akshit Arora](https://github.com/akshit-arora) ([@akshitarora0907](https://x.com/akshitarora0907)).\n";
-                        $rewritten = preg_replace('/^# Installation\s*/im', "# Installation\n" . $intro . "\n", $rewritten);
+
+                    if (file_put_contents($targetPath, $rewritten) === false) {
+                        throw new \RuntimeException("Unable to write file: {$targetPath}");
                     }
-                    
-                    file_put_contents($targetPath, $rewritten);
                 }
 
                 $filesScanned++;
@@ -161,12 +229,39 @@ class DocsRewriteCommand extends Command
             $progressBar->finish();
             $output->writeln("\n");
 
+            $pagesWritten = 0;
+            if (!$dryRun) {
+                // Persist the symbol -> docs-page map next to the rewritten
+                // output so search (serve + static) can deep-link rows to docs.
+                // Primary page is the first alphabetically (deterministic).
+                $pagesMap = [];
+                foreach ($symbolPages as $symbol => $slugs) {
+                    ksort($slugs);
+                    $primarySlug = (string) array_key_first($slugs);
+                    $primaryAnchor = $slugs[$primarySlug] ?? null;
+                    $pagesMap[$symbol] = [
+                        'page' => $primarySlug,
+                        'anchor' => is_string($primaryAnchor) && $primaryAnchor !== '' ? $primaryAnchor : null,
+                        'pages' => array_keys($slugs),
+                    ];
+                }
+                ksort($pagesMap);
+                $pagesJson = json_encode($pagesMap, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+                if ($pagesJson !== false) {
+                    $pagesPath = rtrim($outputPath, '/\\') . DIRECTORY_SEPARATOR . 'symbol_pages.json';
+                    if (file_put_contents($pagesPath, $pagesJson) !== false) {
+                        $pagesWritten = count($pagesMap);
+                    }
+                }
+            }
+
             $io->success([
                 $dryRun ? 'Documentation dry-run rewrite completed!' : 'Documentation rewrite completed successfully!',
                 "Total markdown files scanned: {$filesScanned}",
                 "Files modified / enriched: {$filesModified}",
                 "Total <x-since> tags present: {$totalTags}",
                 $dryRun ? 'Dry run mode: no files written' : "Output written to: {$outputPath}",
+                $dryRun ? 'Dry run mode: symbol map not written' : "Symbols mapped to docs pages: {$pagesWritten}",
             ]);
 
             return Command::SUCCESS;

@@ -67,25 +67,32 @@ class BuildIndexCommand extends Command
         $io = new SymfonyStyle($input, $output);
         $io->title('Laravel Pro Docs: Framework Git & AST Symbol Indexer');
 
-        $frameworkPath = $input->getOption('framework-path');
-        if (empty($frameworkPath)) {
+        $rawFrameworkPath = $input->getOption('framework-path');
+        if (empty($rawFrameworkPath)) {
             $io->error('Please specify the path to a local clone of laravel/framework using --framework-path');
             return Command::FAILURE;
         }
 
-        $frameworkPath = (string) realpath($frameworkPath);
-        if (!is_dir($frameworkPath) || !is_dir($frameworkPath . '/.git')) {
-            $io->error("Directory is not a valid git repository: {$frameworkPath}");
+        $resolvedFrameworkPath = realpath((string) $rawFrameworkPath);
+        if ($resolvedFrameworkPath === false || !is_dir($resolvedFrameworkPath) || !is_dir($resolvedFrameworkPath . '/.git')) {
+            $io->error("Directory is not a valid git repository: {$rawFrameworkPath}");
             return Command::FAILURE;
         }
+        $frameworkPath = $resolvedFrameworkPath;
 
         $fromTag = (string) $input->getOption('from-tag');
         $toTag = $input->getOption('to-tag') ? (string) $input->getOption('to-tag') : null;
         $outputPath = (string) $input->getOption('output');
 
-        $docsPath = $input->getOption('docs-path');
-        if ($docsPath !== null) {
-            $docsPath = (string) realpath($docsPath);
+        $rawDocsPath = $input->getOption('docs-path');
+        $docsPath = null;
+        if ($rawDocsPath !== null && $rawDocsPath !== '') {
+            $resolvedDocsPath = realpath((string) $rawDocsPath);
+            if ($resolvedDocsPath === false || !is_dir($resolvedDocsPath)) {
+                $io->error("Documentation directory not found: {$rawDocsPath}");
+                return Command::FAILURE;
+            }
+            $docsPath = $resolvedDocsPath;
         }
 
         $io->section('Configuration');

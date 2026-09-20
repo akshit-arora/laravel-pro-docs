@@ -16,14 +16,58 @@ permissions:
 
 concurrency:
   group: "pages"
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
+  # The full framework-history scan is expensive. On scheduled runs, compare
+  # upstream HEAD SHAs against the last successful build and skip everything
+  # when neither laravel/framework nor laravel/docs moved. Pushes and manual
+  # dispatches always build.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      framework_sha: ${{ steps.remote.outputs.framework_sha }}
+      docs_sha: ${{ steps.remote.outputs.docs_sha }}
+    steps:
+      - name: Resolve upstream HEAD SHAs
+        id: remote
+        run: |
+          echo "framework_sha=$(git ls-remote https://github.com/laravel/framework.git HEAD | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "docs_sha=$(git ls-remote https://github.com/laravel/docs.git HEAD | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore last built SHAs
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .pro-docs-last-shas
+          # run_id key never hits; restore-keys falls back to the latest saved SHAs.
+          key: pro-docs-shas-${{ github.run_id }}
+          restore-keys: |
+            pro-docs-shas-
+
+      - name: Compare SHAs
+        id: compare
+        run: |
+          CHANGED=true
+          if [ "${{ github.event_name }}" = "schedule" ] && [ -f .pro-docs-last-shas ]; then
+            if grep -q "${{ steps.remote.outputs.framework_sha }}" .pro-docs-last-shas 2>/dev/null && \
+               grep -q "${{ steps.remote.outputs.docs_sha }}" .pro-docs-last-shas 2>/dev/null; then
+              CHANGED=false
+            fi
+          fi
+          echo "changed=${CHANGED}" >> "$GITHUB_OUTPUT"
+          echo "Upstream changed: ${CHANGED}"
+
   build-and-deploy:
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,24 +77,42 @@ jobs:
         with:
           php-version: '8.4'
           extensions: mbstring, json
+          coverage: none
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: ${{ runner.os }}-php-8.4-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-php-8.4-
 
       - name: Install Composer Dependencies
-        run: composer install --prefer-dist --no-progress
+        run: composer install --prefer-dist --no-progress --no-interaction
 
-      - name: Clone laravel/framework (Full history for tags)
+      - name: Clone laravel/framework (tags + sparse src/ history)
         run: |
-          git clone --no-checkout https://github.com/laravel/framework.git framework
+          git clone --filter=blob:none --sparse --tags --no-checkout https://github.com/laravel/framework.git framework
           cd framework
-          git config core.sparseCheckout true
-          echo "src/" >> .git/info/sparse-checkout
+          git sparse-checkout set src
+          # Ensure release tags are present even if the clone was filtered.
+          git fetch --tags --force origin
           git checkout master
 
       - name: Clone laravel/docs
         run: git clone --depth 1 https://github.com/laravel/docs.git docs
 
+      - name: Apply Overrides
+        run: |
+          if [ -d "overrides" ] && [ -n "$(ls -A overrides 2>/dev/null)" ]; then
+            cp -r overrides/. docs/
+          else
+            echo "No overrides to apply."
+          fi
+
       - name: Build Framework Symbol & PR Index
         run: php bin/console build:index --framework-path=framework --docs-path=docs
-        
+
       - name: Rewrite Markdown Docs
         run: php bin/console docs:rewrite --docs-path=docs --output-path=output/docs
 
@@ -68,3 +130,15 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      # Only record SHAs after a successful deploy, so a failed run retries
+      # the full build next time instead of being skipped as "unchanged".
+      - name: Record built SHAs
+        run: |
+          printf '%s\n%s\n' "${{ needs.changes.outputs.framework_sha }}" "${{ needs.changes.outputs.docs_sha }}" > .pro-docs-last-shas
+
+      - name: Save built SHAs to cache
+        uses: actions/cache/save@v4
+        with:
+          path: .pro-docs-last-shas
+          key: pro-docs-shas-${{ github.run_id }}

@@ -42,8 +42,13 @@ class DocsHeaderIndexer
             return [];
         }
 
-        // Pre-cache all branch markdown files in-memory for ultra-fast scanning
+        // Pre-cache all branch markdown files in-memory for ultra-fast scanning.
+        // For each branch file we store both raw content and the normalized
+        // heading set, so section matching compares headings-to-headings
+        // instead of substring-searching the whole file (which falsely matched
+        // any prose mentioning the words, e.g. "cache").
         $branchCache = [];
+        $branchHeadings = [];
         foreach (self::BRANCHES as $branch) {
             $tree = $this->runGit($this->docsRepoPath, ['ls-tree', '-r', '--name-only', "origin/{$branch}"]);
             if ($tree === '') {
@@ -55,6 +60,7 @@ class DocsHeaderIndexer
                 if (str_ends_with($treeFile, '.md')) {
                     $content = $this->runGit($this->docsRepoPath, ['show', "origin/{$branch}:{$treeFile}"]);
                     $branchCache[$branch][$treeFile] = $content;
+                    $branchHeadings[$branch][$treeFile] = self::extractNormalizedHeadings($content);
                 }
             }
         }
@@ -92,22 +98,25 @@ class DocsHeaderIndexer
             if (preg_match_all('/^(#{1,4}\s+[^<\n]+)/m', $content, $hMatches)) {
                 foreach ($hMatches[1] as $headerLine) {
                     $cleanHeader = trim($headerLine);
-                    $titleOnly = trim(preg_replace('/^#{1,4}\s+/', '', $cleanHeader));
-                    $titleStripped = trim(preg_replace('/\{\s*\.[^}]+\}/', '', $titleOnly));
+                    $hashStripped = preg_replace('/^#{1,4}\s+/', '', $cleanHeader);
+                    $titleOnly = trim(is_string($hashStripped) ? $hashStripped : $cleanHeader);
+                    $braceStripped = preg_replace('/\{\s*\.[^}]+\}/', '', $titleOnly);
+                    $titleStripped = trim(is_string($braceStripped) ? $braceStripped : $titleOnly);
                     $cleanTitleOnly = trim($titleStripped, '` ');
-                    $normalizedTitle = strtolower(trim(preg_replace('/[^a-zA-Z0-9]+/', ' ', $cleanTitleOnly)));
+                    $spaceNormalized = preg_replace('/[^a-zA-Z0-9]+/', ' ', $cleanTitleOnly);
+                    $normalizedTitle = strtolower(trim(is_string($spaceNormalized) ? $spaceNormalized : $cleanTitleOnly));
 
                     // Skip generic boilerplate headings
-                    if (in_array($normalizedTitle, self::GENERIC_HEADINGS, true)) {
+                    if ($normalizedTitle === '' || in_array($normalizedTitle, self::GENERIC_HEADINGS, true)) {
                         continue;
                     }
 
                     $earliestHBranch = null;
 
                     foreach (self::BRANCHES as $branch) {
-                        if (isset($branchCache[$branch][$filename])) {
-                            $branchContent = $branchCache[$branch][$filename];
-                            if (stripos($branchContent, $cleanTitleOnly) !== false || stripos($branchContent, $titleOnly) !== false) {
+                        if (isset($branchHeadings[$branch][$filename])) {
+                            $headings = $branchHeadings[$branch][$filename];
+                            if (isset($headings[$normalizedTitle])) {
                                 $earliestHBranch = $branch;
                                 break;
                             }
@@ -138,6 +147,29 @@ class DocsHeaderIndexer
         }
 
         return $headerIndex;
+    }
+
+    /**
+     * Extract normalized heading titles (H1-H4) from markdown content.
+     *
+     * @return array<string, true> Set of normalized heading => true
+     */
+    private static function extractNormalizedHeadings(string $content): array
+    {
+        $headings = [];
+        if (preg_match_all('/^(#{1,4}\s+[^<\n]+)/m', $content, $hMatches) !== false) {
+            foreach ($hMatches[1] as $headerLine) {
+                $title = trim((string) preg_replace('/^#{1,4}\s+/', '', trim($headerLine)));
+                $title = trim((string) preg_replace('/\{\s*\.[^}]+\}/', '', $title));
+                $title = trim($title, '` ');
+                $normalized = strtolower(trim((string) preg_replace('/[^a-zA-Z0-9]+/', ' ', $title)));
+                if ($normalized !== '') {
+                    $headings[$normalized] = true;
+                }
+            }
+        }
+
+        return $headings;
     }
 
     /**
