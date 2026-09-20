@@ -59,6 +59,14 @@ class BuildIndexCommand extends Command
                 InputOption::VALUE_OPTIONAL,
                 'Output JSON file path',
                 'storage/symbols_index.json'
+            )
+            ->addOption(
+                'resume',
+                null,
+                InputOption::VALUE_NONE,
+                'Resume from an existing index file instead of rebuilding from scratch. ' .
+                'The existing index is loaded and only tags newer than its newest version are scanned. ' .
+                'Earliest versions are preserved, so this is safe for incremental CI builds.'
             );
     }
 
@@ -83,6 +91,7 @@ class BuildIndexCommand extends Command
         $fromTag = (string) $input->getOption('from-tag');
         $toTag = $input->getOption('to-tag') ? (string) $input->getOption('to-tag') : null;
         $outputPath = (string) $input->getOption('output');
+        $resume = (bool) $input->getOption('resume');
 
         $rawDocsPath = $input->getOption('docs-path');
         $docsPath = null;
@@ -108,6 +117,23 @@ class BuildIndexCommand extends Command
         $io->listing($configList);
 
         try {
+            $registry = new SymbolRegistry();
+
+            if ($resume && is_file($outputPath)) {
+                $registry = SymbolRegistry::loadFromJson($outputPath);
+                $resumedFrom = self::newestVersion($registry);
+                if ($resumedFrom !== null && version_compare(ltrim($resumedFrom, 'v'), ltrim($fromTag, 'v'), '>')) {
+                    $fromTag = $resumedFrom;
+                    $io->info(sprintf(
+                        'Resuming from cached index: %d symbols, continuing from %s.',
+                        $registry->count(),
+                        $fromTag
+                    ));
+                } elseif ($registry->count() > 0) {
+                    $io->info(sprintf('Resuming from cached index with %d symbols.', $registry->count()));
+                }
+            }
+
             $git = new GitRepository($frameworkPath);
             $tags = $git->getTags('v*.*.*', $fromTag, $toTag);
 
@@ -126,7 +152,6 @@ class BuildIndexCommand extends Command
             $progressBar->setMessage('0', 'new_symbols');
             $progressBar->start();
 
-            $registry = new SymbolRegistry();
             $indexer = new SymbolIndexer(
                 git: $git,
                 extractor: new AstSymbolExtractor(),
@@ -198,5 +223,25 @@ class BuildIndexCommand extends Command
             }
             return Command::FAILURE;
         }
+    }
+
+    /**
+     * Find the newest version recorded in a pre-existing index so a resumed
+     * run can skip tags that were already scanned.
+     */
+    private static function newestVersion(SymbolRegistry $registry): ?string
+    {
+        $newest = null;
+        foreach ($registry->all() as $meta) {
+            $version = $meta->version;
+            if ($version === '') {
+                continue;
+            }
+            if ($newest === null || version_compare(ltrim($version, 'v'), ltrim($newest, 'v'), '>')) {
+                $newest = $version;
+            }
+        }
+
+        return $newest;
     }
 }

@@ -67,7 +67,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -90,17 +90,25 @@ jobs:
       - name: Install Composer Dependencies
         run: composer install --prefer-dist --no-progress --no-interaction
 
-      - name: Clone laravel/framework (tags + sparse src/ history)
+      # NOTE: Do NOT use --filter=blob:none here. build:index runs thousands of
+      # `git show <tag>:<file>` calls, and with a blobless partial clone each
+      # one triggers an on-demand blob fetch over the network. That lazy
+      # fetching is what pushed CI builds past 1 hour while local full clones
+      # take minutes. A full clone downloads once (~1-2 min on Actions
+      # runners) and every later git object read is local disk I/O.
+      # --no-checkout skips materializing a working tree: build:index only
+      # reads the git object database (ls-tree/show/diff/log), never src/.
+      - name: Clone laravel/framework (full history + tags, no working tree)
         run: |
-          git clone --filter=blob:none --sparse --tags --no-checkout https://github.com/laravel/framework.git framework
-          cd framework
-          git sparse-checkout set src
-          # Ensure release tags are present even if the clone was filtered.
-          git fetch --tags --force origin
-          git checkout master
+          git clone --tags --no-checkout https://github.com/laravel/framework.git framework
+          git -C framework fetch --tags --force origin
 
-      - name: Clone laravel/docs
-        run: git clone --depth 1 https://github.com/laravel/docs.git docs
+      # Fetch every docs branch tip (shallow): DocsHeaderIndexer compares
+      # headings across origin/4.0..13.x, which a single-branch --depth 1
+      # clone cannot see (header indexing silently became a no-op on CI).
+      # The docs repo is markdown-only, so all branch tips are still tiny.
+      - name: Clone laravel/docs (all branches, shallow)
+        run: git clone --depth 1 --no-single-branch https://github.com/laravel/docs.git docs
 
       - name: Apply Overrides
         run: |
@@ -110,14 +118,37 @@ jobs:
             echo "No overrides to apply."
           fi
 
+      - name: Restore cached symbol index (incremental builds)
+        id: index-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: storage/symbols_index.json
+          # run_id key never hits; restore-keys falls back to the newest saved index.
+          key: pro-docs-index-${{ github.run_id }}
+          restore-keys: |
+            pro-docs-index-
+
       - name: Build Framework Symbol & PR Index
-        run: php bin/console build:index --framework-path=framework --docs-path=docs
+        # --resume reuses the cached index and only scans tags newer than its
+        # newest version (seconds for daily upstream changes instead of a full
+        # ~500-tag rescan). Earliest versions are preserved, so results are
+        # identical to a from-scratch build. Cache miss = full build.
+        run: php bin/console build:index --framework-path=framework --docs-path=docs --resume
 
       - name: Rewrite Markdown Docs
         run: php bin/console docs:rewrite --docs-path=docs --output-path=output/docs
 
       - name: Build Static HTML Site
         run: php bin/console docs:build-static --docs-path=output/docs --output-path=dist
+
+      - name: Save symbol index to cache
+        # Cache even if later deploy steps fail: the index itself built fine
+        # and the next run can resume from it.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: storage/symbols_index.json
+          key: pro-docs-index-${{ github.run_id }}
 
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v4

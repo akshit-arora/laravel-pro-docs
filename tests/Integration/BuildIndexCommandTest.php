@@ -93,6 +93,57 @@ PHP;
         $this->assertSame('https://github.com/laravel/framework/pull/49451', $json['Number::currency']['pr_url']);
     }
 
+    public function testResumeReusesExistingIndexAndPreservesEarliestVersions(): void
+    {
+        $app = new Application();
+        $app->add(new BuildIndexCommand());
+        $command = $app->find('build:index');
+        $tester = new CommandTester($command);
+
+        // Initial build covering only the base tag.
+        $exitCode = $tester->execute([
+            '--framework-path' => $this->tempRepo,
+            '--from-tag' => 'v9.0.0',
+            '--to-tag' => 'v9.0.0',
+            '--output' => $this->outputJson,
+        ]);
+        $this->assertSame(0, $exitCode);
+
+        // New release with a new symbol.
+        $numberContent = <<<'PHP'
+<?php
+
+namespace Illuminate\Support;
+
+class Widget
+{
+    public static function sprocket(): string
+    {
+        return 'sprocket';
+    }
+}
+PHP;
+        file_put_contents($this->tempRepo . '/src/Illuminate/Support/Widget.php', $numberContent);
+        shell_exec("git -C " . escapeshellarg($this->tempRepo) . " add .");
+        shell_exec("git -C " . escapeshellarg($this->tempRepo) . " commit -m '[10.x] Add Widget::sprocket (#12345)'");
+        shell_exec("git -C " . escapeshellarg($this->tempRepo) . " tag v10.0.0");
+
+        // Resume: must pick up the new symbol while keeping base versions intact.
+        $exitCode = $tester->execute([
+            '--framework-path' => $this->tempRepo,
+            '--output' => $this->outputJson,
+            '--resume' => true,
+        ]);
+        $this->assertSame(0, $exitCode);
+
+        $json = json_decode((string) file_get_contents($this->outputJson), true);
+        $this->assertIsArray($json);
+        $this->assertSame('v9.0.0', $json['str']['version']);
+        $this->assertArrayHasKey('Widget::sprocket', $json);
+        $this->assertSame('v10.0.0', $json['Widget::sprocket']['version']);
+        $this->assertSame(12345, $json['Widget::sprocket']['pr']);
+    }
+
     public function testFailsWhenFrameworkPathIsMissingOrInvalid(): void
     {
         $app = new Application();
