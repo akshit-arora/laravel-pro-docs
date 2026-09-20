@@ -39,7 +39,7 @@ jobs:
 
       - name: Restore last built SHAs
         id: cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .pro-docs-last-shas
           # run_id key never hits; restore-keys falls back to the latest saved SHAs.
@@ -80,7 +80,7 @@ jobs:
           coverage: none
 
       - name: Cache Composer packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: vendor
           key: ${{ runner.os }}-php-8.4-${{ hashFiles('**/composer.lock') }}
@@ -120,7 +120,7 @@ jobs:
 
       - name: Restore cached symbol index (incremental builds)
         id: index-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: storage/symbols_index.json
           # run_id key never hits; restore-keys falls back to the newest saved index.
@@ -145,7 +145,7 @@ jobs:
         # Cache even if later deploy steps fail: the index itself built fine
         # and the next run can resume from it.
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: storage/symbols_index.json
           key: pro-docs-index-${{ github.run_id }}
@@ -169,7 +169,7 @@ jobs:
           printf '%s\n%s\n' "${{ needs.changes.outputs.framework_sha }}" "${{ needs.changes.outputs.docs_sha }}" > .pro-docs-last-shas
 
       - name: Save built SHAs to cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .pro-docs-last-shas
           key: pro-docs-shas-${{ github.run_id }}
