@@ -129,7 +129,7 @@ jobs:
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
       # Only record SHAs after a successful deploy, so a failed run retries
       # the full build next time instead of being skipped as "unchanged".
